@@ -1,0 +1,446 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Resources": {
+      "CLDashboard1": {
+        "Type": "AWS::EC2::Subnet",
+        "Properties": {
+          "VpcId": "vpc-0d300066e07e8394a",
+          "CidrBlock": "10.0.8.0/24",
+          "AvailabilityZone": "us-east-1a",
+          "MapPublicIpOnLaunch": true
+        }
+      },
+      "CLDashboardSG": {
+        "Type": "AWS::EC2::SecurityGroup",
+        "Properties": {
+          "GroupDescription": "Enable HTTP HTTPS SSH access",
+          "VpcId": "vpc-0d300066e07e8394a",
+          "SecurityGroupIngress": [
+            {
+              "IpProtocol": "tcp",
+              "FromPort": 80,
+              "ToPort": 80,
+              "CidrIp": "0.0.0.0/0"
+            },
+            {
+              "IpProtocol": "tcp",
+              "FromPort": 22,
+              "ToPort": 22,
+              "CidrIp": "0.0.0.0/0"
+            },
+            {
+              "IpProtocol": "tcp",
+              "FromPort": 443,
+              "ToPort": 443,
+              "CidrIp": "0.0.0.0/0"
+            }
+          ]
+        }
+      },
+      "CLDashboardHZ": {
+        "Type": "AWS::Route53::HostedZone",
+        "Properties": {
+          "Name": "thecldashboard.click"
+        }
+      },
+      "CLDashboardEC2": {
+        "Type": "AWS::EC2::Instance",
+        "Properties": {
+          "ImageId": "ami-06b21ccaeff8cd686",
+          "InstanceType": "t2.micro",
+          "SecurityGroupIds": [
+            {
+              "Ref": "CLDashboardSG"
+            }
+          ],
+          "SubnetId": {
+            "Ref": "CLDashboard1"
+          },
+          "UserData": {
+            "Fn::Base64": {
+              "Fn::Join": [
+                "",
+                [
+                  "#!/bin/bash\n",
+                  "yum update -y\n",
+                  "yum install -y python3\n",
+                  "aws s3 cp s3://my-code-bucket/my-application.zip /home/ec2-user/\n",
+                  "unzip /home/ec2-user/my-application.zip -d /home/ec2-user/my-app\n",
+                  "cd /home/ec2-user/my-app\n",
+                  "python3 app.py &\n"
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "CLDashboardKS": {
+        "Type": "AWS::Kinesis::Stream",
+        "Properties": {
+          "Name": "CL-Dashboard-Data-Stream",
+          "ShardCount": 1
+        }
+      },
+      "CLDashboardKA": {
+        "Type": "AWS::KinesisAnalyticsV2::Application",
+        "Properties": {
+          "ApplicationName": "cl-dashboard-analytics-app",
+          "RuntimeEnvironment": "SQL-1_0",
+          "ServiceExecutionRole": {
+            "Fn::GetAtt": [
+              "AnalyticsExecutionRole",
+              "Arn"
+            ]
+          },
+          "ApplicationConfiguration": {
+            "SqlApplicationConfiguration": {
+              "Inputs": [
+                {
+                  "NamePrefix": "input",
+                  "InputSchema": {
+                    "RecordFormat": {
+                      "RecordFormatType": "JSON",
+                      "MappingParameters": {
+                        "JSONMappingParameters": {
+                          "RecordRowPath": "$"
+                        }
+                      }
+                    },
+                    "RecordColumns": [
+                      {
+                        "Name": "EmployeeID",
+                        "SqlType": "VARCHAR(64)",
+                        "Mapping": "$.EmployeeID"
+                      },
+                      {
+                        "Name": "Name",
+                        "SqlType": "VARCHAR(64)",
+                        "Mapping": "$.Name"
+                      },
+                      {
+                        "Name": "JobTitle", 
+                        "SqlType": "VARCHAR(64)",
+                        "Mapping": "$.JobTitle"  
+                      },
+                      {
+                        "Name": "HireDate",
+                        "SqlType": "VARCHAR(64)",
+                        "Mapping": "$.HireDate"
+                      },
+                      {
+                        "Name": "Salary",
+                        "SqlType": "INTEGER",
+                        "Mapping": "$.Salary"
+                      },
+                      {
+                        "Name": "Shift",
+                        "SqlType": "VARCHAR(64)",
+                        "Mapping": "$.Shift"
+                      }
+                    ]
+                  },
+                  "KinesisStreamsInput": {
+                    "ResourceARN": {
+                      "Fn::GetAtt": [
+                        "CLDashboardKS",
+                        "Arn"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "AnalyticsExecutionRole": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+          "RoleName": "KinesisAnalyticsExecutionRole",
+          "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "kinesisanalytics.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          },
+          "Policies": [
+            {
+              "PolicyName": "KinesisAnalyticsPolicy",
+              "PolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "kinesis:DescribeStream",
+                      "kinesis:GetRecords",
+                      "kinesis:GetShardIterator"
+                    ],
+                    "Resource": "*"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "CLDashboardDBTable": {
+        "Type": "AWS::DynamoDB::Table",
+        "Properties": {
+          "TableName": "CLDashboardAnalyticsTable",
+          "AttributeDefinitions": [
+            {
+              "AttributeName": "ID",
+              "AttributeType": "S"
+            }
+          ],
+          "KeySchema": [
+            {
+              "AttributeName": "ID",
+              "KeyType": "HASH"
+            }
+          ],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      },
+      "MiniMartProducts": {
+        "Type": "AWS::DynamoDB::Table",
+        "Properties": {
+          "TableName": "MiniMartProducts",
+          "AttributeDefinitions": [
+            {
+              "AttributeName": "ItemID",
+              "AttributeType": "S"
+            }
+          ],
+          "KeySchema": [
+            {
+              "AttributeName": "ItemID",
+              "KeyType": "HASH"
+            }
+          ],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      },
+      "MiniMartEmployees": {
+        "Type": "AWS::DynamoDB::Table",
+        "Properties": {
+          "TableName": "MiniMartEmployees",
+          "AttributeDefinitions": [
+            {
+              "AttributeName": "EmployeeID",
+              "AttributeType": "S"
+            }
+          ],
+          "KeySchema": [
+            {
+              "AttributeName": "EmployeeID",
+              "KeyType": "HASH"
+            }
+          ],
+          "BillingMode": "PAY_PER_REQUEST"
+        }
+      },
+      "DataForProducts": {
+        "Type": "AWS::Lambda::Function",
+        "Properties": {
+          "FunctionName": "InsertMiniMartProductData",
+          "Runtime": "python3.8",
+          "Role": "arn:aws:iam::565393029077:role/Lambda_DB_Access",
+          "Handler": "lambda_function.lambda_handler",
+          "Code": {
+            "ZipFile": {
+              "Fn::Join": [
+                "",
+                [
+                  "import json\n",
+                  "import boto3\n",
+                  "def lambda_handler(event, context):\n",
+                  "    dynamodb = boto3.resource('dynamodb')\n",
+                  "    table = dynamodb.Table('MiniMartProducts')\n",
+                  "    products = [\n",
+                  "        {\"ItemID\": \"P001\", \"Name\": \"Apple\", \"Category\": \"Fruit\", \"Price\": 0.5, \"StockQuantity\": 150, \"Supplier\": \"Fresh Farms\"},\n",
+                  "        {\"ItemID\": \"P002\", \"Name\": \"Milk\", \"Category\": \"Dairy\", \"Price\": 1.2, \"StockQuantity\": 50, \"Supplier\": \"DairyBest\"},\n",
+                  "        {\"ItemID\": \"P003\", \"Name\": \"Bread\", \"Category\": \"Bakery\", \"Price\": 2.0, \"StockQuantity\": 30, \"Supplier\": \"BakeryCo\"},\n",
+                  "        {\"ItemID\": \"P004\", \"Name\": \"Orange Juice\", \"Category\": \"Beverage\", \"Price\": 2.5, \"StockQuantity\": 40, \"Supplier\": \"JuiceHub\"}\n",
+                  "    ]\n",
+                  "    for product in products:\n",
+                  "        table.put_item(Item=product)\n",
+                  "    return {\n",
+                  "        'statusCode': 200,\n",
+                  "        'body': json.dumps('Inserted products')\n",
+                  "    }\n"
+                ]
+              ]
+            }
+          },
+          "MemorySize": 128,
+          "Timeout": 10
+        }
+      },
+      "DataForEmployees": {
+        "Type": "AWS::Lambda::Function",
+        "Properties": {
+          "FunctionName": "InsertMiniMartEmployeeData",
+          "Runtime": "python3.8",
+          "Role": "arn:aws:iam::565393029077:role/Lambda_DB_Access",
+          "Handler": "lambda_function.lambda_handler",
+          "Code": {
+            "ZipFile": {
+              "Fn::Join": [
+                "",
+                [
+                  "import json\n",
+                  "import boto3\n",
+                  "def lambda_handler(event, context):\n",
+                  "    dynamodb = boto3.resource('dynamodb')\n",
+                  "    table = dynamodb.Table('MiniMartEmployees')\n",
+                  "    employees = [\n",
+                  "        {\"EmployeeID\": \"E001\", \"Name\": \"Oluwadamife\", \"JobTitle\": \"Manager\", \"HireDate\": \"2021-06-15\", \"Salary\": 60000, \"Shift\": \"Morning\"},\n",
+                  "        {\"EmployeeID\": \"E002\", \"Name\": \"Oniyelu\", \"JobTitle\": \"Cashier\", \"HireDate\": \"2022-01-10\", \"Salary\": 30000, \"Shift\": \"Afternoon\"},\n",
+                  "        {\"EmployeeID\": \"E003\", \"Name\": \"Ashraf\", \"JobTitle\": \"Stock Clerk\", \"HireDate\": \"2020-04-22\", \"Salary\": 28000, \"Shift\": \"Night\"}\n",
+                  "        {\"EmployeeID\": \"E003\", \"Name\": \"Joan\", \"JobTitle\": \"Accountant\", \"HireDate\": \"2022-04-22\", \"Salary\": 60000, \"Shift\": \"All Day\"}\n",
+                  "        {\"EmployeeID\": \"E003\", \"Name\": \"Daniela\", \"JobTitle\": \"Marketer\", \"HireDate\": \"2022-12-22\", \"Salary\": 45000, \"Shift\": \"Morning\"}\n",
+                  "        {\"EmployeeID\": \"E003\", \"Name\": \"Ifeanyi\", \"JobTitle\": \"Auditor\", \"HireDate\": \"2021-06-22\", \"Salary\": 49000, \"Shift\": \"Morning\"}\n",
+                  "    ]\n",
+                  "    for employee in employees:\n",
+                  "        table.put_item(Item=employee)\n",
+                  "    return {\n",
+                  "        'statusCode': 200,\n",
+                  "        'body': json.dumps('Inserted employees')\n",
+                  "    }\n"
+                ]
+              ]
+            }
+          },
+          "MemorySize": 128,
+          "Timeout": 10
+        }
+      },
+      "CLDashboardSNSTopic": {
+        "Type": "AWS::SNS::Topic",
+        "Properties": {
+          "TopicName": "MiniMartNotifications-1"
+        }
+      },
+      "CLDashboardSNSsub": {
+        "Type": "AWS::SNS::Subscription",
+        "Properties": {
+          "TopicArn": {
+            "Ref": "CLDashboardSNSTopic"
+          },
+          "Protocol": "email",
+          "Endpoint": "lawsonifeoma123@gmail.com" 
+        }
+      },
+      "EventRuleForProducts": {
+        "Type": "AWS::Events::Rule",
+        "Properties": {
+          "ScheduleExpression": "rate(1 hour)",
+          "Targets": [
+            {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DataForProducts",
+                  "Arn"
+                ]
+              },
+              "Id": "TargetFunctionV1"
+            }
+          ]
+        }
+      },
+      "EventRuleForEmployees": {
+        "Type": "AWS::Events::Rule",
+        "Properties": {
+          "ScheduleExpression": "rate(1 hour)",
+          "Targets": [
+            {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "DataForEmployees",
+                  "Arn"
+                ]
+              },
+              "Id": "TargetFunctionV1"
+            }
+          ]
+        }
+      },
+      "PermissionForProducts": {
+        "Type": "AWS::Lambda::Permission",
+        "Properties": {
+          "Action": "lambda:InvokeFunction",
+          "FunctionName": {
+            "Ref": "DataForProducts"
+          },
+          "Principal": "events.amazonaws.com",
+          "SourceArn": {
+            "Fn::GetAtt": [
+              "EventRuleForProducts",
+              "Arn"
+            ]
+          }
+        }
+      },
+      "PermissionForEmployees": {
+        "Type": "AWS::Lambda::Permission",
+        "Properties": {
+          "Action": "lambda:InvokeFunction",
+          "FunctionName": {
+            "Ref": "DataForEmployees"
+          },
+          "Principal": "events.amazonaws.com",
+          "SourceArn": {
+            "Fn::GetAtt": [
+              "EventRuleForEmployees",
+              "Arn"
+            ]
+          }
+        }
+      }
+    },
+    "Outputs": {
+      "MiniMartProductsTableName": {
+        "Description": "Name of the MiniMart Products table",
+        "Value": {
+          "Ref": "MiniMartProducts"
+        }
+      },
+      "MiniMartEmployeesTableName": {
+        "Description": "Name of the MiniMart Employees table",
+        "Value": {
+          "Ref": "MiniMartEmployees"
+        }
+      },
+      "AnalyticsAppArn": {
+        "Description": "ARN of the Kinesis Analytics Application",
+        "Value": {
+          "Ref": "CLDashboardKA"
+          
+        }
+      },
+      "DynamoDBTableArn": {
+        "Description": "ARN of the DynamoDB Table",
+        "Value": {
+          "Fn::GetAtt": [
+            "CLDashboardDBTable",
+            "Arn"
+          ]
+        }
+      },
+      "SNSTopicArn": {
+        "Description": "ARN of the SNS Topic",
+        "Value": {
+          "Ref": "CLDashboardSNSTopic"
+        }
+      }
+    }
+  }
+  
